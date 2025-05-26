@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__
+config/
+etc/
+bin/
+lib/
+lib64
+pyvenv.cfg
+share/
+*_token_ids.csv
