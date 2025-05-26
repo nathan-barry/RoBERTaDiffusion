@@ -1,12 +1,6 @@
-# References:
-    # https://huggingface.co/docs/transformers/model_doc/roberta
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
-
-from utils import print_number_of_parameters
 
 
 class TokenEmbedding(nn.Embedding):
@@ -65,35 +59,59 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, hidden_size, n_heads, drop_prob=0.1):
         super().__init__()
     
-        self.n_heads = n_heads
-
+        self.n_heads  = n_heads
         self.head_size = hidden_size // n_heads
 
+        # projects to (Q, K, V) all at once
         self.qkv_proj = nn.Linear(hidden_size, 3 * n_heads * self.head_size, bias=False)
         self.attn_drop = nn.Dropout(drop_prob)
-        self.out_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.out_proj  = nn.Linear(hidden_size, hidden_size, bias=False)
 
     def _get_attention_score(self, q, k):
-        attn_score = torch.einsum("bhnd,bhmd->bhnm", q, k)
-        attn_score /= (self.head_size ** 0.5)
-        return attn_score
+        # q, k shape: (batch, heads, seq_len, head_dim)
+        scores = torch.einsum("bhnd,bhmd->bhnm", q, k)
+        scores = scores / (self.head_size ** 0.5)
+        return scores
 
     def forward(self, x, mask=None):
+        # x: (batch, seq_len, hidden_size)
+        b, n, _ = x.size()
+
+        # 1) project to QKV and split
+        qkv = self.qkv_proj(x)  # (b, n, 3 * heads * head_dim)
         q, k, v = torch.split(
-            self.qkv_proj(x), split_size_or_sections=self.n_heads * self.head_size, dim=2,
-        )
-        q = rearrange(q, pattern="b n (h d) -> b h n d", h=self.n_heads, d=self.head_size)
-        k = rearrange(k, pattern="b n (h d) -> b h n d", h=self.n_heads, d=self.head_size)
-        v = rearrange(v, pattern="b n (h d) -> b h n d", h=self.n_heads, d=self.head_size)
-        attn_score = self._get_attention_score(q=q, k=k)
+            qkv,
+            self.n_heads * self.head_size,
+            dim=2
+        )  # each is (b, n, heads * head_dim)
+
+        # 2) reshape+permute to (batch, heads, seq_len, head_dim)
+        q = q.view(b, n, self.n_heads, self.head_size) \
+             .permute(0, 2, 1, 3)  # (b, h, n, d)
+        k = k.view(b, n, self.n_heads, self.head_size) \
+             .permute(0, 2, 1, 3)
+        v = v.view(b, n, self.n_heads, self.head_size) \
+             .permute(0, 2, 1, 3)
+
+        # 3) attention scores
+        scores = self._get_attention_score(q, k)  # (b, h, n, n)
         if mask is not None:
-            attn_score.masked_fill_(mask=mask, value=-1e9)
-        attn_weight = F.softmax(attn_score, dim=3)
-        x = torch.einsum("bhnm,bhmd->bhnd", attn_weight, v)
-        x = rearrange(x, pattern="b h n d -> b n (h d)")
-        x = self.attn_drop(x)
-        x = self.out_proj(x)
-        return x
+            scores = scores.masked_fill(mask, float("-1e9"))
+
+        # 4) softmax + dropout
+        attn_weights = F.softmax(scores, dim=-1)  # along the last dim
+        attn_output = torch.einsum("bhnm,bhmd->bhnd", attn_weights, v)  # (b,h,n,d)
+
+        # 5) back to (batch, seq_len, hidden_size)
+        attn_output = attn_output \
+            .permute(0, 2, 1, 3) \
+            .contiguous() \
+            .view(b, n, self.n_heads * self.head_size)
+
+        # 6) final dropout + output projection
+        attn_output = self.attn_drop(attn_output)
+        output = self.out_proj(attn_output)
+        return output
 
 
 class PositionwiseFeedForward(nn.Module):
