@@ -124,27 +124,57 @@ class RoBERTaForMaskedLM(nn.Module):
         return logits, loss
 
 
-# --- training loop ---
-model = RoBERTaForMaskedLM().to(device)
+if __name__ == "__main__":
+    model = RoBERTaForMaskedLM().to(device)
 
-# print the number of parameters in the model
-print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
+    # print the number of parameters in the model
+    print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
 
-# create a PyTorch optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    # create a PyTorch optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-pbar = trange(max_iters, desc="RoBERTa Training", unit="step")
-for iter in pbar:
-    # eval every eval_interval steps
-    if iter % eval_interval == 0 or iter == max_iters - 1:
-        losses = estimate_loss()
-        pbar.set_postfix(train=f"{losses['train']:.4f}", val=f"{losses['val']:.4f}")
+    pbar = trange(max_iters, desc="RoBERTa Training", unit="step")
+    for iter in pbar:
+        # eval every eval_interval steps
+        if iter % eval_interval == 0 or iter == max_iters - 1:
+            losses = estimate_loss(model)
+            pbar.set_postfix(train=f"{losses['train']:.4f}", val=f"{losses['val']:.4f}")
 
-    xb, yb = get_batch("train")
-    logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+        xb, yb = get_batch("train")
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
 
-torch.save(model.state_dict(), "roberta_weights.pt")
-print("RoBERTa weights saved to roberta_weights.pt")
+    torch.save(model.state_dict(), "roberta_weights.pt")
+    print("RoBERTa weights saved to roberta_weights.pt")
+
+    model.eval()
+    print("\n=== Masked-LM sample predictions ===\n")
+    for _ in range(5):  # show 5 examples
+        xb, yb = get_batch("val")  # xb = masked inputs, yb = labels or -100
+        logits, _ = model(xb, yb)  # forward pass
+        preds = torch.argmax(logits, dim=-1)  # (B, T) predicted token ids
+
+        # just look at the first element of the batch
+        masked_seq = xb[0].tolist()
+        label_seq = yb[0].tolist()
+        pred_seq = preds[0].tolist()
+
+        # decode the masked string
+        masked_str = decode(masked_seq)
+        print("Masked input:  ", masked_str)
+
+        # iterate positions and report predictions where label != -100
+        print("Predictions:")
+        for i, lab in enumerate(label_seq):
+            if lab != -100:
+                m = masked_seq[i]
+                p = pred_seq[i]
+                print(
+                    f"  pos {i:3d}:  '{itos[m]}'  →  predicted '{itos[p]}',  actual '{itos[lab]}'"
+                )
+        print("-" * 60)
+
+    print("Done.\n")
+    model.train()

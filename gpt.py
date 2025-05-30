@@ -59,7 +59,7 @@ def get_batch(split):
 
 
 @torch.no_grad()
-def estimate_loss():
+def estimate_loss(model):
     out = {}
     model.eval()
     for split in ["train", "val"]:
@@ -119,7 +119,7 @@ class MultiHeadAttention(nn.Module):
         return out
 
 
-class FeedFoward(nn.Module):
+class FeedForward(nn.Module):
     """a simple linear layer followed by a non-linearity"""
 
     def __init__(self, n_embd):
@@ -143,7 +143,7 @@ class Block(nn.Module):
         super().__init__()
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
-        self.ffwd = FeedFoward(n_embd)
+        self.ffwd = FeedForward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
@@ -215,31 +215,32 @@ class GPTLanguageModel(nn.Module):
         return idx
 
 
-model = GPTLanguageModel().to(device)
-# print the number of parameters in the model
-print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
+if __name__ == "__main__":
+    model = GPTLanguageModel().to(device)
+    # print the number of parameters in the model
+    print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
 
-# create a PyTorch optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    # create a PyTorch optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-pbar = trange(max_iters, desc="GPT Training", unit="step")
-for it in pbar:
-    # eval every eval_interval steps
-    if it % eval_interval == 0 or it == max_iters - 1:
-        losses = estimate_loss()
-        pbar.set_postfix(train=f"{losses['train']:.4f}", val=f"{losses['val']:.4f}")
+    pbar = trange(max_iters, desc="GPT Training", unit="step")
+    for it in pbar:
+        # eval every eval_interval steps
+        if it % eval_interval == 0 or it == max_iters - 1:
+            losses = estimate_loss(model)
+            pbar.set_postfix(train=f"{losses['train']:.4f}", val=f"{losses['val']:.4f}")
 
-    xb, yb = get_batch("train")
-    logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+        xb, yb = get_batch("train")
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
 
-# Save
-torch.save(model.state_dict(), "gpt_weights.pt")
-print("GPT weights saved to gpt_weights.pt")
+    # Save
+    torch.save(model.state_dict(), "gpt_weights.pt")
+    print("GPT weights saved to gpt_weights.pt")
 
-# generate from the model
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
-# open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
+    # generate from the model
+    context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
+    # open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))

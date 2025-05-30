@@ -10,3 +10,4 @@ share/
 *_token_ids.csv
 
 input.txt
+weights/
