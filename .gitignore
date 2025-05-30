@@ -8,3 +8,5 @@ lib64
 pyvenv.cfg
 share/
 *_token_ids.csv
+
+input.txt
