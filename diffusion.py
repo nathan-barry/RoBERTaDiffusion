@@ -93,3 +93,13 @@ if __name__ == "__main__":
         # update every 100 iters
         if it % 100 == 0:
             pbar.set_postfix(diffusion_loss=f"{loss:.4f}")
+
+    # Save entire diffusion state
+    torch.save(
+        {
+            "mask_probs": diffusion.mask_probs,
+            "model_states": [m.state_dict() for m in diffusion.models],
+        },
+        "diffusion_weights.pt",
+    )
+    print("Diffusion weights saved to diffusion_weights.pt")

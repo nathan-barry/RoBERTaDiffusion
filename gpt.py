@@ -215,10 +215,9 @@ class GPTLanguageModel(nn.Module):
         return idx
 
 
-model = GPTLanguageModel()
-m = model.to(device)
+model = GPTLanguageModel().to(device)
 # print the number of parameters in the model
-print(sum(p.numel() for p in m.parameters()) / 1e6, "M parameters")
+print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -236,7 +235,11 @@ for it in pbar:
     loss.backward()
     optimizer.step()
 
+# Save
+torch.save(model.state_dict(), "gpt_weights.pt")
+print("GPT weights saved to gpt_weights.pt")
+
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
 # open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))

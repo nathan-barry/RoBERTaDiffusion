@@ -145,3 +145,6 @@ for iter in pbar:
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
+
+torch.save(model.state_dict(), "roberta_weights.pt")
+print("RoBERTa weights saved to roberta_weights.pt")
