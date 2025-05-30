@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from tqdm.auto import trange
 
 from gpt import (
     batch_size,
@@ -132,18 +133,14 @@ print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-for iter in range(max_iters):
-    # every once in a while evaluate the loss on train and val sets
+pbar = trange(max_iters, desc="RoBERTa Training", unit="step")
+for iter in pbar:
+    # eval every eval_interval steps
     if iter % eval_interval == 0 or iter == max_iters - 1:
         losses = estimate_loss()
-        print(
-            f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
-        )
+        pbar.set_postfix(train=f"{losses['train']:.4f}", val=f"{losses['val']:.4f}")
 
-    # sample a batch of data
     xb, yb = get_batch("train")
-
-    # evaluate the loss
     logits, loss = model(xb, yb)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
