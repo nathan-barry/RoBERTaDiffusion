@@ -1,99 +1,131 @@
 import os
+import re
 import torch
+from transformers import RobertaTokenizerFast, RobertaForMaskedLM
 
-# 1) GPT
-from gpt import (
-    GPTLanguageModel,
-    encode as gpt_encode,
-    decode as gpt_decode,
-    device as gpt_device,
+# ──────────────────────────────────────────────────────────────────────────────
+# 1) Configuration: change these if needed
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Directory prefix for your fine-tuned checkpoints
+CHECKPOINT_DIR_PREFIX = "roberta-diffusion-"
+
+# The max length used during training / tokenization
+MAX_LEN = 256
+
+# Example text to denoise. You can swap this out for any sentence.
+# Note: we do NOT include "<mask>" manually—this script fully masks all tokens.
+INPUT_TEXT = "In a distant future, humanity has spread to the stars and seeks peace."
+
+# Use GPU if available
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2) Find and sort all checkpoint directories by mask probability (descending)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def find_and_sort_checkpoints(root_dir="."):
+    """
+    Finds all subdirectories in root_dir that start with CHECKPOINT_DIR_PREFIX,
+    extracts the mask_prob from their name (e.g. "roberta-diffusion-03-0.33"),
+    and returns a list of (mask_prob, full_path) sorted by mask_prob descending.
+    """
+    ckpts = []
+    pattern = re.compile(
+        rf"^{re.escape(CHECKPOINT_DIR_PREFIX)}\d{{2}}-([0-9]+\.[0-9]+)$"
+    )
+    for name in os.listdir(root_dir):
+        if os.path.isdir(name):
+            m = pattern.match(name)
+            if m:
+                prob = float(m.group(1))
+                ckpts.append((prob, os.path.join(root_dir, name)))
+    # sort descending by mask_prob
+    ckpts.sort(key=lambda x: x[0], reverse=True)
+    return ckpts
+
+
+checkpoints = find_and_sort_checkpoints()
+if not checkpoints:
+    raise RuntimeError(f"No directories found with prefix '{CHECKPOINT_DIR_PREFIX}'")
+
+print("Found the following checkpoints (mask_prob descending):")
+for prob, path in checkpoints:
+    print(f"  {path}  (mask_prob={prob:.2f})")
+print()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3) Load a single tokenizer (all models share the same vocab/merges)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Use the tokenizer from the first checkpoint
+first_ckpt_dir = checkpoints[0][1]
+tokenizer = RobertaTokenizerFast.from_pretrained(first_ckpt_dir)
+
+mask_token_id = tokenizer.mask_token_id
+special_token_ids = set(tokenizer.all_special_ids)
+pad_token_id = tokenizer.pad_token_id
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4) Prepare the fully-masked input IDs (x_T)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Tokenize the raw input text to exactly MAX_LEN with padding/truncation
+encoded = tokenizer(
+    INPUT_TEXT,
+    return_tensors="pt",
+    max_length=MAX_LEN,
+    truncation=True,
+    padding="max_length",
 )
-from roberta import (
-    RoBERTaForMaskedLM,
-    get_batch as roberta_get_batch,
-    decode as rob_decode,
-    itos as rob_itos,
-    device as rob_device,
-    mask_token_id,
+input_ids = encoded["input_ids"].to(DEVICE)  # shape: (1, MAX_LEN)
+
+# Create a fully-masked version: replace every non-special token with <mask>
+x = input_ids.clone()
+# Build a boolean mask: True wherever we should mask (i.e. not a special token)
+mask_positions = ~torch.isin(x, torch.tensor(list(special_token_ids), device=DEVICE))
+x[mask_positions] = mask_token_id
+current_ids = x  # this is x_T
+
+print("=== Initial Fully-Masked Input (step T) ===")
+print(
+    tokenizer.decode(
+        current_ids[0], skip_special_tokens=False, clean_up_tokenization_spaces=False
+    )
 )
-from diffusion import MaskedLanguageDiffusion, mask_batch_dynamic, device as diff_device
+print()
 
-# All devices should be the same—just pick one
-device = torch.device(gpt_device)
+# ──────────────────────────────────────────────────────────────────────────────
+# 5) Run the reverse diffusion: for each checkpoint in descending order
+# ──────────────────────────────────────────────────────────────────────────────
 
-weights_dir = "weights"
+for step, (prob, ckpt_dir) in enumerate(checkpoints):
+    print(f"--- Step {step} (mask_prob={prob:.2f}) ---")
+    # Load model weights
+    model = RobertaForMaskedLM.from_pretrained(ckpt_dir).to(DEVICE)
+    model.eval()
 
-# ── GPT Inference ─────────────────────────────────────────────────────────────
+    with torch.no_grad():
+        outputs = model(current_ids)  # logits shape: (1, MAX_LEN, V)
+        logits = outputs.logits
+        # For each position, pick the highest-probability token
+        preds = torch.argmax(logits, dim=-1)  # shape: (1, MAX_LEN)
+        current_ids = preds
 
-gpt_model = GPTLanguageModel().to(device)
-gpt_ckpt = torch.load(os.path.join(weights_dir, "gpt_weights.pt"), map_location=device)
-gpt_model.load_state_dict(gpt_ckpt)
-gpt_model.eval()
+    # Decode for display: show � for any residual mask tokens
+    decoded = tokenizer.decode(
+        current_ids[0], skip_special_tokens=False, clean_up_tokenization_spaces=False
+    )
+    # Replace every "<mask>" token with a � symbol
+    display = decoded.replace(tokenizer.mask_token, "�")
+    print(display)
+    print()
 
-prompt = "\n"
-input_ids = torch.tensor([gpt_encode(prompt)], dtype=torch.long, device=device)
-
-with torch.no_grad():
-    out = gpt_model.generate(input_ids, max_new_tokens=100)
-generated = gpt_decode(out[0].tolist())
-
-print("=== GPT Generation ===")
-print(f"Prompt: {prompt!r}")
-print(generated)
-print("\n" + "=" * 70 + "\n")
-
-# ── RoBERTa Masked‐LM Inference ────────────────────────────────────────────────
-
-roberta = RoBERTaForMaskedLM().to(device)
-rob_ckpt = torch.load(
-    os.path.join(weights_dir, "roberta_weights.pt"), map_location=device
+print("Reverse diffusion complete. Final output:")
+print(
+    tokenizer.decode(
+        current_ids[0], skip_special_tokens=True, clean_up_tokenization_spaces=True
+    )
 )
-roberta.load_state_dict(rob_ckpt)
-roberta.eval()
-
-print("=== RoBERTa Masked‐LM Samples ===\n")
-xb, _ = roberta_get_batch("val")  # xb: (B, T)
-logits, _ = roberta(xb, None)  # ignore labels here
-preds = torch.argmax(logits, dim=-1)  # (B, T)
-
-inp_ids = xb[0].tolist()
-pred_ids = preds[0].tolist()
-
-# build strings, using ❔ for the mask token
-masked_str = "".join(
-    "�" if tok_id == mask_token_id else rob_itos[tok_id] for tok_id in inp_ids
-)
-pred_str = "".join(rob_itos[tok_id] for tok_id in pred_ids)
-
-print(f"Input:\n{masked_str}\n\n")
-print(f"Output:\n{pred_str}")
-print("-" * 60)
-
-# ── Diffusion Denoising Inference ──────────────────────────────────────────────
-
-# # load diffusion checkpoint
-# diff_ckpt = torch.load(
-#     os.path.join(weights_dir, "diffusion_weights.pt"), map_location=device
-# )
-# n_steps = len(diff_ckpt["model_states"])
-# diffusion = MaskedLanguageDiffusion(n_steps=n_steps).to(device)
-# diffusion.mask_probs = diff_ckpt["mask_probs"]
-# for model, st in zip(diffusion.models, diff_ckpt["model_states"]):
-#     model.load_state_dict(st)
-# diffusion.eval()
-#
-# # take one example from val, fully mask it, then denoise
-# xb_val, _ = roberta_get_batch("val")
-# x0 = xb_val[:1]  # take first in batch
-# xT, _ = mask_batch_dynamic(x0, mask_prob=1.0)  # fully masked
-#
-# with torch.no_grad():
-#     trajectory = diffusion.sample(xT)  # list of [x0_pred,...,xT]
-#
-# print("=== Diffusion Denoising Trajectory ===")
-# for t, x in enumerate(trajectory):
-#     seq = x[0].tolist()
-#     text = "".join(rob_itos[i] for i in seq)
-#     print(f"Step {t:2d} (mask={diffusion.mask_probs[t]:.2f}):")
-#     print(text)
-#     print("-" * 50)
+print()
