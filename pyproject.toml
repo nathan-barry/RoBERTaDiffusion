@@ -10,3 +10,6 @@ dependencies = [
     "torch>=2.7.0",
     "transformers>=4.52.4",
 ]
+
+[tool.ruff]
+select = ["ALL"]
