@@ -9,9 +9,9 @@ from transformers import (
 )
 
 # 1) Hyperparameters
-N_STEPS = 5
-NUM_EPOCHS = 10
-BATCH_SIZE = 8
+N_STEPS = 10
+NUM_EPOCHS = 30
+BATCH_SIZE = 16
 MAX_LEN = 256
 PREFIX_LEN = 16
 
@@ -19,7 +19,7 @@ PREFIX_LEN = 16
 mask_probs = [(i + 1) / N_STEPS for i in range(N_STEPS - 1, -1, -1)]
 
 # 2) Load WikiText-2 and drop empty lines
-dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
+dataset = load_dataset("openwebtext")
 for split in ["train", "validation"]:
     dataset[split] = dataset[split].filter(lambda ex: ex["text"].strip() != "")
 

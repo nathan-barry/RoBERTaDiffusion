@@ -11,7 +11,7 @@ from transformers import RobertaTokenizerFast, RobertaForMaskedLM
 MODEL_DIR = "weights/roberta-diffusion-single-with-prefix"
 MAX_LEN = 256
 PREFIX_LEN = 16
-N_STEPS = 5
+N_STEPS = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -193,6 +193,9 @@ for p_mask in mask_probs:
 
     snapshots.append(current_ids[0].detach().cpu().clone())
 
+snapshots.append(current_ids[0].detach().cpu().clone())
+snapshots.append(current_ids[0].detach().cpu().clone())
+
 # --------------------------------------
 # 9) Convert each snapshot of IDs → a list of token strings
 # --------------------------------------
@@ -261,7 +264,7 @@ def update(frame_idx):
     tokens_this_step = all_token_grids[frame_idx]  # length = MAX_LEN
     for i, tok in enumerate(tokens_this_step):
         if tok == mask_str:
-            display_tok = " "
+            display_tok = "____"
         else:
             # Strip leading 'Ġ' if present
             display_tok = tok[1:] if tok.startswith("Ġ") else tok
