@@ -1,4 +1,6 @@
 import sys
+import argparse
+import time
 import torch
 import random
 import math
@@ -7,12 +9,38 @@ from matplotlib.animation import FuncAnimation
 
 from transformers import RobertaTokenizerFast, RobertaForMaskedLM
 
+# --------------------------------------
+# 0) ARGPARSE: add a flag to disable animation
+# --------------------------------------
+parser = argparse.ArgumentParser(
+    description="Run RoBERTa‐diffusion inference, optionally with a matplotlib animation."
+)
+parser.add_argument(
+    "--animation",
+    action="store_false",
+    help="If set, skip creating or showing the animation.",
+)
+parser.add_argument("prompt", type=str, help="Text prompt to use as the fixed prefix.")
+args = parser.parse_args()
+
+prompt_text = args.prompt
+animate = not args.animation
+
 # === USER CONFIG ===
 MODEL_DIR = "weights/roberta-diffusion-single-with-prefix"
 MAX_LEN = 256
 PREFIX_LEN = 16
 N_STEPS = 10
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+    DEVICE = torch.device("mps")
+    print("[INFO] Using MPS (Apple silicon) backend")
+elif torch.cuda.is_available():
+    DEVICE = torch.device("cuda")
+    print("[INFO] Using CUDA backend")
+else:
+    DEVICE = torch.device("cpu")
+    print("[INFO] Using CPU backend")
 
 
 # =============================================================================
@@ -24,18 +52,7 @@ def top_k_top_p_filtering(
     top_p: float = 0.0,
     filter_value: float = -float("Inf"),
 ) -> torch.Tensor:
-    """Filter a distribution of logits using top-k and/or nucleus (top-p) filtering.
-
-    Args:
-        logits: 1D tensor of shape (vocab_size,)
-        top_k: keep only top_k tokens with highest logits (set others to filter_value)
-        top_p: keep the smallest set of tokens whose cumulative probability ≥ top_p
-        filter_value: the value to assign to filtered logits (default: -inf)
-
-    Returns:
-        The filtered logits (same shape, with unwanted positions = filter_value).
-
-    """
+    """Filter a distribution of logits using top-k and/or nucleus (top-p) filtering."""
     logits = logits.clone()
 
     # ===== Top-K filtering =====
@@ -61,15 +78,10 @@ def top_k_top_p_filtering(
     return logits
 
 
-if len(sys.argv) < 2:
-    print('Usage: python inference.py "<PROMPT>"')
-    sys.exit(1)
-
-prompt_text = sys.argv[1]
-
 # --------------------------------------
 # 1) Load tokenizer & model from disk
 # --------------------------------------
+print("[INFO] Loading RoBERTa tokenizer and model…")
 tokenizer = RobertaTokenizerFast.from_pretrained(MODEL_DIR)
 model = RobertaForMaskedLM.from_pretrained(MODEL_DIR)
 model.to(DEVICE)
@@ -81,6 +93,7 @@ mask_str = tokenizer.mask_token
 # --------------------------------------
 # 2) Tokenize the prompt (no padding)
 # --------------------------------------
+print("[INFO] Tokenizing prompt…")
 encoding = tokenizer(
     prompt_text,
     truncation=False,
@@ -128,18 +141,22 @@ current_ids = current_ids.to(DEVICE)
 current_attention = current_attention.to(DEVICE)
 
 # --------------------------------------
-# 7) Build the list of inference mask-probabilities
+# 7) Build the list of inference mask‐probabilities
 # --------------------------------------
 mask_probs = [i / N_STEPS for i in range(N_STEPS - 1, -1, -1)]
-print(mask_probs)
+print("[INFO] Mask probabilities (high → low):", mask_probs)
 
 # --------------------------------------
-# 8) Multi-step denoising, but first collect a list of snapshots for animation.
-#    Each snapshot is the "current_ids" after updating for that step.
-#    We explicitly skip appending a snapshot for p_mask == 1.0, so that the first
-#    “revealed” frame occurs at p_mask = 0.8.
+# 8) Multi‐step denoising, collecting snapshots if needed
 # --------------------------------------
-snapshots = [current_ids[0].detach().cpu().clone()]  # start with all-masks
+print("[INFO] Starting text generation…")
+
+if animate:
+    # Only collect snapshots if we’re animating
+    snapshots = [current_ids[0].detach().cpu().clone()]
+
+# Start timing right before the denoising loop
+t0 = time.time()
 
 for p_mask in mask_probs:
     # 8a) Forward pass
@@ -150,10 +167,10 @@ for p_mask in mask_probs:
         )
         logits = outputs.logits  # shape: (1, MAX_LEN, vocab_size)
 
-    # 8b) Sample predictions for all positions
+    # 8b) Sample predictions for each position
     pred_ids = torch.zeros((1, MAX_LEN), dtype=torch.long, device=DEVICE)
     for i in range(MAX_LEN):
-        logit_vec = logits[0, i, :]  # shape (vocab_size,)
+        logit_vec = logits[0, i, :]
         filtered = top_k_top_p_filtering(
             logit_vec,
             top_k=50,
@@ -164,24 +181,24 @@ for p_mask in mask_probs:
         sampled = torch.multinomial(probs, num_samples=1)
         pred_ids[0, i] = sampled
 
-    # 8c) If p_mask == 0.0, fill everything ≥ PREFIX_LEN with pred_ids and break.
+    # 8c) If p_mask == 0.0: reveal everything ≥ PREFIX_LEN and stop
     if p_mask == 0.0:
         new_ids = current_ids.clone()
         new_ids[0, PREFIX_LEN:] = pred_ids[0, PREFIX_LEN:]
         current_ids = new_ids
-        snapshots.append(current_ids[0].detach().cpu().clone())
+        if animate:
+            snapshots.append(current_ids[0].detach().cpu().clone())
         break
 
-    # 8d) Otherwise, randomly re-mask a fraction p_mask of positions ≥ PREFIX_LEN
+    # 8d) Otherwise: randomly re-mask a fraction p_mask of tokens ≥ PREFIX_LEN
     positions = torch.arange(MAX_LEN, device=DEVICE)
     is_prefix = positions < PREFIX_LEN
     can_modify = ~is_prefix
 
-    # Randomly decide which positions to re-mask
     rand = torch.rand(MAX_LEN, device=DEVICE)
-    mask_positions = (rand < p_mask) & can_modify  # True => will be masked
+    mask_positions = (rand < p_mask) & can_modify  # True => re‐mask
 
-    # 8e) Build the next current_ids:
+    # 8e) Build next_ids
     next_ids = current_ids.clone()
     for i in range(PREFIX_LEN, MAX_LEN):
         if mask_positions[i]:
@@ -190,107 +207,93 @@ for p_mask in mask_probs:
             next_ids[0, i] = pred_ids[0, i]
 
     current_ids = next_ids
+    if animate:
+        snapshots.append(current_ids[0].detach().cpu().clone())
 
-    snapshots.append(current_ids[0].detach().cpu().clone())
+# End timing immediately after the denoising loop
+t1 = time.time()
+elapsed = t1 - t0
+print(f"[INFO] Denoising loop took {elapsed:.2f} seconds")
 
-snapshots.append(current_ids[0].detach().cpu().clone())
-snapshots.append(current_ids[0].detach().cpu().clone())
-
-# --------------------------------------
-# 9) Convert each snapshot of IDs → a list of token strings
-# --------------------------------------
-all_token_grids = []  # list of lists-of-strings, shape: [n_steps][MAX_LEN]
-for snap in snapshots:
-    ids = snap.tolist()
-    tokens = tokenizer.convert_ids_to_tokens(ids)
-    all_token_grids.append(tokens)
 
 # --------------------------------------
-# *** PRINT FINAL OUTPUT TO CONSOLE ***
+# 9) Final textual output (no animation)
 # --------------------------------------
-# The last element in `snapshots` is the fully denoised sequence.
-final_ids = snapshots[-1].tolist()
-final_str = tokenizer.decode(
-    final_ids,
-    skip_special_tokens=True,
-    clean_up_tokenization_spaces=False,
-)
 print("\n=== Final Output ===")
+decoded_tokens = tokenizer.convert_ids_to_tokens(current_ids[0].detach().cpu().tolist())
+# Remove the “Ġ” prefix for readability, replace <mask> with underscores
+processed = []
+for tok in decoded_tokens:
+    if tok == mask_str:
+        processed.append("_____")
+    else:
+        processed.append(tok[1:] if tok.startswith("Ġ") else tok)
+final_str = " ".join(processed)
 print(final_str)
 print("====================\n")
 
 # --------------------------------------
-# 10) Prepare for animation: compute grid layout
+# 10) If animation was requested, build the matplotlib figure
 # --------------------------------------
-seq_len = MAX_LEN
-num_cols = math.ceil(math.sqrt(seq_len))
-num_rows = math.ceil(seq_len / num_cols)
+if animate:
+    # Convert each snapshot → a concatenated, wrapped string
+    all_text_snapshots = []
+    for snap in snapshots:
+        token_list = tokenizer.convert_ids_to_tokens(snap.tolist())
+        processed_tokens = []
+        for tok in token_list:
+            if tok == mask_str:
+                processed_tokens.append("_____")
+            else:
+                if tok.startswith("Ġ"):
+                    processed_tokens.append(tok[1:])
+                else:
+                    processed_tokens.append(tok)
+        joined = " ".join(processed_tokens)
+        all_text_snapshots.append(joined)
 
-xs, ys = [], []
-x_margin = 0.02
-y_margin = 0.02
-usable_width = 1.0 - 2 * x_margin
-usable_height = 1.0 - 2 * y_margin
-
-for row in range(num_rows):
-    y_center = 1.0 - (y_margin + (row + 0.5) * (usable_height / num_rows))
-    for col in range(num_cols):
-        x_center = x_margin + (col + 0.5) * (usable_width / num_cols)
-        xs.append(x_center)
-        ys.append(y_center)
-xs = xs[:seq_len]
-ys = ys[:seq_len]
-
-# --------------------------------------
-# 11) Build Matplotlib figure for animation
-# --------------------------------------
-fig, ax = plt.subplots(figsize=(8, 8))
-ax.axis("off")
-
-fontdict = {
-    "family": "monospace",
-    "fontsize": 8,
-}
-
-
-def update(frame_idx):
-    """At each frame, show the token strings from that snapshot in a grid.
-    If a token == mask_str, display "____" instead.
-    Otherwise, strip off any leading 'Ġ'.
-    """
-    ax.clear()
+    # Build the figure
+    fig, ax = plt.subplots(figsize=(10, 6))
     ax.axis("off")
 
-    tokens_this_step = all_token_grids[frame_idx]  # length = MAX_LEN
-    for i, tok in enumerate(tokens_this_step):
-        if tok == mask_str:
-            display_tok = "____"
-        else:
-            # Strip leading 'Ġ' if present
-            display_tok = tok[1:] if tok.startswith("Ġ") else tok
+    # Create a white buffer by shrinking the axes within the figure
+    # Adjust these percentages to change the margin size:
+    plt.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
 
+    fontdict = {
+        "family": "monospace",
+        "fontsize": 10,
+    }
+
+    def update(frame_idx):
+        """Display the entire sequence at `frame_idx` as wrapped, left-aligned text."""
+        ax.clear()
+        ax.axis("off")
+
+        text_to_display = all_text_snapshots[frame_idx]
+
+        # Place the text inset so it isn't flush with the axes border
         ax.text(
-            xs[i],
-            ys[i],
-            display_tok,
+            0.00,  # x in axes fraction (0.0 = left edge of axes)
+            1.00,  # y in axes fraction (1.0 = top of axes)
+            text_to_display,
             fontdict=fontdict,
-            ha="center",
-            va="center",
+            ha="left",
+            va="top",
+            wrap=True,
+            transform=ax.transAxes,
         )
 
-    ax.set_title(f"Step {frame_idx} / {len(all_token_grids) - 1}", pad=20)
+        ax.set_title(f"Step {frame_idx} / {len(all_text_snapshots) - 1}", pad=12)
 
+    # Create and show the animation
+    anim = FuncAnimation(
+        fig,
+        update,
+        frames=range(len(all_text_snapshots)),
+        interval=500,  # milliseconds between frames
+        blit=False,
+    )
 
-# --------------------------------------
-# 12) Create and show the animation
-# --------------------------------------
-anim = FuncAnimation(
-    fig,
-    update,
-    frames=range(len(all_token_grids)),
-    interval=500,  # 1000 ms between frames
-    blit=False,
-)
-
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()

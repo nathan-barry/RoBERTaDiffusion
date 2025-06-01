@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
 import sys
+import time
 import torch
 from transformers import GPT2TokenizerFast, GPT2LMHeadModel
 
@@ -43,8 +43,9 @@ input_ids = encoding["input_ids"].to(DEVICE)  # shape: (1, L_prompt)
 attention_mask = encoding["attention_mask"].to(DEVICE)  # shape: (1, L_prompt)
 print(f"[INFO] Prompt token length = {input_ids.shape[-1]}")
 
-# 5) Generate continuation with sampling
+# 5) Generate continuation with sampling, timing this step
 print("[INFO] Starting text generation…")
+t0 = time.time()
 try:
     output_ids = model.generate(
         input_ids=input_ids,
@@ -62,6 +63,10 @@ except Exception as e:
     print(e)
     print("[INFO] Please check PyTorch version / model compatibility.")
     sys.exit(1)
+t1 = time.time()
+
+elapsed = t1 - t0
+print(f"[INFO] model.generate() took {elapsed:.2f} seconds")
 
 # 6) Decode & print the generated text
 print("[INFO] Decoding generated tokens…")
