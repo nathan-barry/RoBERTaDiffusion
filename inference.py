@@ -10,8 +10,13 @@ from matplotlib.animation import FuncAnimation
 from transformers import RobertaTokenizerFast, RobertaForMaskedLM
 
 # --------------------------------------
-# 0) ARGPARSE: add a flag to disable animation
+# 0) User Config
 # --------------------------------------
+MODEL_DIR = "weights/roberta-diffusion-16s40e"
+MAX_LEN = 256
+PREFIX_LEN = 16
+N_STEPS = 10
+
 parser = argparse.ArgumentParser(
     description="Run RoBERTa‐diffusion inference, optionally with a matplotlib animation."
 )
@@ -25,12 +30,6 @@ args = parser.parse_args()
 
 prompt_text = args.prompt
 animate = not args.animation
-
-# === USER CONFIG ===
-MODEL_DIR = "weights/roberta-diffusion-single-with-prefix"
-MAX_LEN = 256
-PREFIX_LEN = 16
-N_STEPS = 10
 
 if torch.backends.mps.is_available() and torch.backends.mps.is_built():
     DEVICE = torch.device("mps")
@@ -221,15 +220,10 @@ print(f"[INFO] Denoising loop took {elapsed:.2f} seconds")
 # --------------------------------------
 print("\n=== Final Output ===")
 decoded_tokens = tokenizer.convert_ids_to_tokens(current_ids[0].detach().cpu().tolist())
-# Remove the “Ġ” prefix for readability, replace <mask> with underscores
-processed = []
-for tok in decoded_tokens:
-    if tok == mask_str:
-        processed.append("_____")
-    else:
-        processed.append(tok[1:] if tok.startswith("Ġ") else tok)
-final_str = " ".join(processed)
-print(final_str)
+decoded = tokenizer.decode(
+    current_ids[0], skip_special_tokens=True, clean_up_tokenization_spaces=True
+)
+print(decoded.replace(tokenizer.mask_token, "_____"))
 print("====================\n")
 
 # --------------------------------------
@@ -245,11 +239,8 @@ if animate:
             if tok == mask_str:
                 processed_tokens.append("_____")
             else:
-                if tok.startswith("Ġ"):
-                    processed_tokens.append(tok[1:])
-                else:
-                    processed_tokens.append(tok)
-        joined = " ".join(processed_tokens)
+                processed_tokens.append(tok)
+        joined = "".join(processed_tokens)
         all_text_snapshots.append(joined)
 
     # Build the figure
