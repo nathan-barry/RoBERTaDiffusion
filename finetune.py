@@ -19,7 +19,7 @@ PREFIX_LEN = 16
 mask_probs = [(i + 1) / N_STEPS for i in range(N_STEPS - 1, -1, -1)]
 
 # 2) Load WikiText-2 and drop empty lines
-dataset = load_dataset("openwebtext")
+dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
 for split in ["train", "validation"]:
     dataset[split] = dataset[split].filter(lambda ex: ex["text"].strip() != "")
 
