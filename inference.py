@@ -152,7 +152,11 @@ print("[INFO] Starting text generation…")
 
 if animate:
     # Only collect snapshots if we’re animating
-    snapshots = [current_ids[0].detach().cpu().clone()]
+    snapshots = [
+        tokenizer.decode(
+            current_ids[0], skip_special_tokens=False, clean_up_tokenization_spaces=True
+        )
+    ]
 
 # Start timing right before the denoising loop
 t0 = time.time()
@@ -186,7 +190,13 @@ for p_mask in mask_probs:
         new_ids[0, PREFIX_LEN:] = pred_ids[0, PREFIX_LEN:]
         current_ids = new_ids
         if animate:
-            snapshots.append(current_ids[0].detach().cpu().clone())
+            snapshots.append(
+                tokenizer.decode(
+                    current_ids[0],
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=True,
+                )
+            )
         break
 
     # 8d) Otherwise: randomly re-mask a fraction p_mask of tokens ≥ PREFIX_LEN
@@ -207,7 +217,13 @@ for p_mask in mask_probs:
 
     current_ids = next_ids
     if animate:
-        snapshots.append(current_ids[0].detach().cpu().clone())
+        snapshots.append(
+            tokenizer.decode(
+                current_ids[0],
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=True,
+            )
+        )
 
 # End timing immediately after the denoising loop
 t1 = time.time()
@@ -233,15 +249,7 @@ if animate:
     # Convert each snapshot → a concatenated, wrapped string
     all_text_snapshots = []
     for snap in snapshots:
-        token_list = tokenizer.convert_ids_to_tokens(snap.tolist())
-        processed_tokens = []
-        for tok in token_list:
-            if tok == mask_str:
-                processed_tokens.append("_____")
-            else:
-                processed_tokens.append(tok)
-        joined = "".join(processed_tokens)
-        all_text_snapshots.append(joined)
+        all_text_snapshots.append(snap.replace("<mask>", " ____"))
 
     # Build the figure
     fig, ax = plt.subplots(figsize=(10, 6))
