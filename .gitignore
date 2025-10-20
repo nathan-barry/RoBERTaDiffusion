@@ -10,3 +10,6 @@ wheels/
 .venv
 
 weights/
+
+# Stuff
+.DS_Store

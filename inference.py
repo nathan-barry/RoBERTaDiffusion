@@ -155,7 +155,7 @@ if animate:
     snapshots = [
         tokenizer.decode(
             current_ids[0], skip_special_tokens=False, clean_up_tokenization_spaces=True
-        )
+        )[3:]
     ]
 
 # Start timing right before the denoising loop
@@ -195,7 +195,7 @@ for p_mask in mask_probs:
                     current_ids[0],
                     skip_special_tokens=False,
                     clean_up_tokenization_spaces=True,
-                )
+                )[3:]
             )
         break
 
@@ -222,7 +222,7 @@ for p_mask in mask_probs:
                 current_ids[0],
                 skip_special_tokens=False,
                 clean_up_tokenization_spaces=True,
-            )
+            )[3:]
         )
 
 # End timing immediately after the denoising loop
