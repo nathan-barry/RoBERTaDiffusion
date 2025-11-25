@@ -1,86 +1,137 @@
-import sys
+"""GPT-2 Inference Script.
+
+Generates text using standard autoregressive GPT-2 for baseline comparison
+with RoBERTa diffusion models.
+"""
+
+import argparse
 import time
+
 import torch
-from transformers import GPT2TokenizerFast, GPT2LMHeadModel
+from transformers import GPT2LMHeadModel, GPT2TokenizerFast
 
-# 1) Parse command-line
-if len(sys.argv) < 2:
-    print('Usage: python gpt2_generate_debug.py "<YOUR PROMPT HERE>"')
-    sys.exit(1)
-prompt_text = sys.argv[1]
+from utils import get_device
 
-# 2) Device selection (including MPS for Apple Silicon)
-if torch.backends.mps.is_available() and torch.backends.mps.is_built():
-    DEVICE = torch.device("mps")
-    print("[INFO] Using MPS (Apple silicon) backend")
-elif torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-    print("[INFO] Using CUDA backend")
-else:
-    DEVICE = torch.device("cpu")
-    print("[INFO] Using CPU backend")
+# =============================================================================
+# Configuration
+# =============================================================================
 
-print("[INFO] Loading GPT-2 tokenizer and model…")
-tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
-# GPT-2 has no pad_token by default. Set pad_token = eos_token so we get a valid attention_mask.
-tokenizer.pad_token = tokenizer.eos_token
 
-model = GPT2LMHeadModel.from_pretrained("gpt2")
-model.to(DEVICE)
-model.eval()
-print("[INFO] Model loaded successfully.")
+class Config:
+    """Inference configuration."""
 
-# 4) Tokenize the prompt (explicitly return attention_mask)
-print("[INFO] Tokenizing prompt…")
-encoding = tokenizer(
-    prompt_text,
-    return_tensors="pt",
-    padding=False,
-    truncation=True,
-    return_attention_mask=True,
-)
-input_ids = encoding["input_ids"].to(DEVICE)  # shape: (1, L_prompt)
-attention_mask = encoding["attention_mask"].to(DEVICE)  # shape: (1, L_prompt)
-print(f"[INFO] Prompt token length = {input_ids.shape[-1]}")
+    MODEL_NAME: str = "gpt2"
+    MAX_LENGTH: int = 256
+    TOP_K: int = 50
+    TOP_P: float = 0.95
+    TEMPERATURE: float = 0.8
 
-# 5) Generate continuation with sampling, timing this step
-print("[INFO] Starting text generation…")
-t0 = time.time()
-try:
+
+# =============================================================================
+# Generation
+# =============================================================================
+
+
+def generate(
+    prompt_text: str,
+    model: GPT2LMHeadModel,
+    tokenizer: GPT2TokenizerFast,
+    config: Config,
+    device: torch.device,
+) -> tuple[str, float]:
+    """Generate text using GPT-2 autoregressive sampling.
+
+    Args:
+        prompt_text: Input text prompt
+        model: GPT-2 model
+        tokenizer: Tokenizer instance
+        config: Configuration object
+        device: Device to run on
+
+    Returns:
+        Tuple of (generated_text, elapsed_time)
+    """
+    # Tokenize the prompt
+    print("[INFO] Tokenizing prompt…")
+    encoding = tokenizer(
+        prompt_text,
+        return_tensors="pt",
+        padding=False,
+        truncation=True,
+        return_attention_mask=True,
+    )
+    input_ids = encoding["input_ids"].to(device)
+    attention_mask = encoding["attention_mask"].to(device)
+    print(f"[INFO] Prompt token length = {input_ids.shape[-1]}")
+
+    # Generate continuation
+    print("[INFO] Starting text generation…")
+    t0 = time.time()
+
     output_ids = model.generate(
         input_ids=input_ids,
         attention_mask=attention_mask,
-        max_length=256,
+        max_length=config.MAX_LENGTH,
         do_sample=True,
-        top_k=50,
-        top_p=0.95,
-        temperature=0.8,
+        top_k=config.TOP_K,
+        top_p=config.TOP_P,
+        temperature=config.TEMPERATURE,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
     )
-except Exception as e:
-    print("[ERROR] model.generate() raised an exception:")
-    print(e)
-    print("[INFO] Please check PyTorch version / model compatibility.")
-    sys.exit(1)
-t1 = time.time()
 
-elapsed = t1 - t0
-print(f"[INFO] model.generate() took {elapsed:.2f} seconds")
+    elapsed = time.time() - t0
+    print(f"[INFO] Generation took {elapsed:.2f} seconds")
 
-# 6) Decode & print the generated text
-print("[INFO] Decoding generated tokens…")
-try:
+    # Decode the generated text
+    print("[INFO] Decoding generated tokens…")
     generated_text = tokenizer.decode(
         output_ids[0],
         skip_special_tokens=True,
         clean_up_tokenization_spaces=True,
     )
-except Exception as e:
-    print("[ERROR] tokenizer.decode() crashed:")
-    print(e)
-    sys.exit(1)
 
-print("\n=== Generated Text ===\n")
-print(generated_text)
-print("\n======================\n")
+    return generated_text, elapsed
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+
+def main() -> None:
+    """Main inference function."""
+    # Parse arguments
+    parser = argparse.ArgumentParser(
+        description="Run GPT-2 inference for baseline comparison."
+    )
+    parser.add_argument("prompt", type=str, help="Text prompt for generation.")
+    args = parser.parse_args()
+
+    config = Config()
+    device = get_device()
+
+    # Load model and tokenizer
+    print("[INFO] Loading GPT-2 tokenizer and model…")
+    tokenizer = GPT2TokenizerFast.from_pretrained(config.MODEL_NAME)
+    # GPT-2 has no pad_token by default, set it to eos_token
+    tokenizer.pad_token = tokenizer.eos_token
+
+    model = GPT2LMHeadModel.from_pretrained(config.MODEL_NAME)
+    model.to(device)
+    model.eval()
+    print("[INFO] Model loaded successfully.")
+
+    # Generate text
+    generated_text, elapsed = generate(args.prompt, model, tokenizer, config, device)
+
+    # Display output
+    print("\n" + "=" * 60)
+    print("Generated Text")
+    print("=" * 60)
+    print(generated_text)
+    print("=" * 60 + "\n")
+
+
+if __name__ == "__main__":
+    main()

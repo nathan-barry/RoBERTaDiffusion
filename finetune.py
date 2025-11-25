@@ -1,197 +1,240 @@
-import os
+"""RoBERTa Diffusion Fine-tuning Script.
+
+This script fine-tunes RoBERTa for diffusion-based text generation using a custom
+masking strategy that progressively denoises text. The model learns to predict
+masked tokens while preserving a fixed prefix.
+
+Key features:
+- Variable masking probabilities sampled per batch
+- Fixed prefix region (first PREFIX_LEN tokens never masked)
+- No special tokens masked during training
+- Trained on OpenWebText dataset
+"""
+
+from typing import Any
+
 import torch
-from datasets import load_dataset
+from datasets import Dataset, DatasetDict, load_dataset
 from transformers import (
-    RobertaTokenizerFast,
     RobertaForMaskedLM,
+    RobertaTokenizerFast,
     Trainer,
     TrainingArguments,
 )
 
-# 1) Hyperparameters
-N_STEPS = 10
-NUM_EPOCHS = 30
-BATCH_SIZE = 16
-MAX_LEN = 256
-PREFIX_LEN = 16
-
-# linearly spaced mask probabilities from 1/N_STEPS → 1.0
-mask_probs = [(i + 1) / N_STEPS for i in range(N_STEPS - 1, -1, -1)]
-
-# 2) Load WikiText-2 and drop empty lines
-dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
-for split in ["train", "validation"]:
-    dataset[split] = dataset[split].filter(lambda ex: ex["text"].strip() != "")
-
-# 3) Tokenizer
-tokenizer = RobertaTokenizerFast.from_pretrained("roberta-base")
-tokenizer.model_max_length = MAX_LEN  # just to be safe
+# =============================================================================
+# Configuration
+# =============================================================================
 
 
-def tokenize_function(examples):
-    return tokenizer(
-        examples["text"],
-        max_length=MAX_LEN,
-        truncation=True,
-        padding=False,
+class Config:
+    """Training hyperparameters."""
+
+    N_STEPS: int = 512
+    NUM_EPOCHS: int = 1
+    BATCH_SIZE: int = 16
+    MAX_LEN: int = 512
+    PREFIX_LEN: int = 64
+    MODEL_NAME: str = "roberta-base"
+    OUTPUT_DIR: str = "roberta-diffusion-single-with-prefix"
+    LOGGING_STEPS: int = 200
+    SAVE_TOTAL_LIMIT: int = 1
+
+
+# =============================================================================
+# Custom Data Collator
+# =============================================================================
+
+
+class DiffusionCollator:
+    """Custom data collator for diffusion training.
+
+    Handles tokenization and masking on-the-fly:
+    1. Tokenizes raw text to exactly MAX_LEN tokens
+    2. Samples a masking probability p from linearly spaced values
+    3. Never masks tokens in the prefix region [0, PREFIX_LEN)
+    4. Never masks special tokens (CLS, SEP, PAD, etc.)
+    5. Masks proportion p of remaining valid tokens
+    6. Sets unmasked tokens to -100 in labels (ignored by loss)
+    """
+
+    def __init__(self, tokenizer: RobertaTokenizerFast, config: Config) -> None:
+        """Initialize the collator with tokenizer and config."""
+        self.tokenizer = tokenizer
+        self.config = config
+        # Generate linearly spaced mask probabilities from high to low
+        self.mask_probs = [
+            (i + 1) / config.N_STEPS for i in range(config.N_STEPS - 1, -1, -1)
+        ]
+        self.special_ids = set(tokenizer.all_special_ids)
+
+    def __call__(self, features: list[dict]) -> dict[str, torch.Tensor]:
+        """Collate a batch of features with tokenization and dynamic masking."""
+        # Extract text from features
+        texts = [f["text"] for f in features]
+
+        # Tokenize all texts to exactly MAX_LEN
+        encoded = self.tokenizer(
+            texts,
+            max_length=self.config.MAX_LEN,
+            truncation=True,
+            padding="max_length",
+            return_tensors="pt",
+        )
+
+        batch_input_ids = encoded["input_ids"]
+        batch_attention = encoded["attention_mask"]
+
+        # Clone input_ids to create labels
+        labels = batch_input_ids.clone()
+
+        # Sample masking probability for this batch
+        p = float(self.mask_probs[torch.randint(0, len(self.mask_probs), (1,))])
+
+        B, L = batch_input_ids.shape
+
+        # Identify special tokens
+        is_special = torch.zeros_like(batch_input_ids, dtype=torch.bool)
+        for sid in self.special_ids:
+            is_special |= batch_input_ids == sid
+
+        # Identify prefix positions
+        pos_idxs = torch.arange(L).unsqueeze(0).expand(B, L)
+        is_prefix = pos_idxs < self.config.PREFIX_LEN
+
+        # Determine which tokens can be masked
+        mask_candidate = (batch_attention == 1) & (~is_special) & (~is_prefix)
+
+        # Randomly select tokens to mask based on probability p
+        rand = torch.rand_like(batch_input_ids, dtype=torch.float)
+        mask_positions = (rand < p) & mask_candidate
+
+        # Apply masking
+        batch_input_ids[mask_positions] = self.tokenizer.mask_token_id
+
+        # Set unmasked positions to -100 in labels (ignored by loss)
+        labels[~mask_positions] = -100
+
+        return {
+            "input_ids": batch_input_ids,
+            "attention_mask": batch_attention,
+            "labels": labels,
+        }
+
+
+# =============================================================================
+# Inference Test
+# =============================================================================
+
+
+def run_inference_test(
+    model: RobertaForMaskedLM,
+    tokenizer: RobertaTokenizerFast,
+    dataset: DatasetDict,
+    diffusion_collator: DiffusionCollator,
+) -> None:
+    """Run a quick inference test on a validation sample."""
+    print("\n[INFO] Running inference test...")
+    model.eval()
+
+    # Get a validation sample (raw text)
+    sample = dataset["validation"][0]
+
+    # Apply collator (tokenizes and masks)
+    batch = diffusion_collator([sample])
+    input_ids_masked = batch["input_ids"].to(model.device)
+
+    # Run inference
+    with torch.no_grad():
+        logits = model(input_ids_masked).logits
+        pred_ids = logits.argmax(dim=-1)
+
+    # Decode masked input and predictions
+    masked_str = tokenizer.decode(
+        input_ids_masked[0],
+        skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
+    ).replace(tokenizer.mask_token, "█")
+
+    pred_str = tokenizer.decode(
+        pred_ids[0],
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
     )
 
-
-# 4) Tokenize (no padding)
-tokenized = dataset.map(
-    tokenize_function,
-    batched=True,
-    remove_columns=["text"],
-)
-
-
-# 5) Group into non-overlapping blocks of MAX_LEN
-def group_texts(examples):
-    concatenated = {k: sum(examples[k], []) for k in examples.keys()}
-    total_length = len(concatenated["input_ids"])
-    total_length = (total_length // MAX_LEN) * MAX_LEN
-
-    result = {
-        k: [concatenated[k][i : i + MAX_LEN] for i in range(0, total_length, MAX_LEN)]
-        for k in concatenated.keys()
-    }
-    # Since no padding, attention_mask is all 1's
-    result["attention_mask"] = [[1] * MAX_LEN for _ in range(len(result["input_ids"]))]
-    return result
+    print("\n" + "=" * 60)
+    print("Sample Inference (random mask rate, prefix unmasked)")
+    print("=" * 60)
+    print("\nMasked Input:")
+    print(masked_str)
+    print("\nModel Output:")
+    print(pred_str)
+    print("=" * 60 + "\n")
 
 
-tokenized = tokenized.map(
-    group_texts,
-    batched=True,
-    remove_columns=tokenized["train"].column_names,
-)
-
-# 6) Instantiate a single RoBERTaForMaskedLM
-model = RobertaForMaskedLM.from_pretrained("roberta-base")
+# =============================================================================
+# Main Training Pipeline
+# =============================================================================
 
 
-# 7) Custom collator that:
-#    - samples one mask-probability p from mask_probs per BATCH
-#    - never masks tokens at positions [0 .. PREFIX_LEN-1]
-#    - masks proportion p of the *remaining* (non-special, non-prefix) tokens
-def diffusion_collator(features):
-    """features: list of dicts with 'input_ids' and 'attention_mask'.
+def main() -> None:
+    """Main training function."""
+    config = Config()
 
-    Returns a batch dict:
-      - input_ids: (B, MAX_LEN) with some tokens replaced by <mask>
-      - attention_mask: (B, MAX_LEN) unchanged
-      - labels: (B, MAX_LEN) where unmasked = -100, masked = original token IDs
-    """
-    # Stack into CPU tensors
-    batch_input_ids = torch.tensor(
-        [f["input_ids"] for f in features], dtype=torch.long
-    )  # shape (B, MAX_LEN)
-    batch_attention = torch.tensor(
-        [f["attention_mask"] for f in features], dtype=torch.long
-    )  # shape (B, MAX_LEN)
+    # Initialize tokenizer
+    print(f"[INFO] Loading tokenizer from {config.MODEL_NAME}...")
+    tokenizer = RobertaTokenizerFast.from_pretrained(config.MODEL_NAME)
+    tokenizer.model_max_length = config.MAX_LEN
 
-    # Clone to be labels; we'll set unmasked → -100 later
-    labels = batch_input_ids.clone()  # shape (B, MAX_LEN)
+    # Load dataset (no preprocessing - done on-the-fly in collator)
+    print("[INFO] Loading OpenWebText dataset...")
+    dataset = load_dataset("openwebtext", trust_remote_code=True)
 
-    # 7a) Sample mask probability p for this batch
-    p = float(mask_probs[torch.randint(low=0, high=len(mask_probs), size=(1,))])
-    # (Option: sample uniformly continuous p = torch.rand(1).item())
+    # Create data collator (handles tokenization + masking)
+    print("[INFO] Creating diffusion data collator...")
+    diffusion_collator = DiffusionCollator(tokenizer, config)
 
-    B, L = batch_input_ids.shape  # L should equal MAX_LEN
+    # Initialize model
+    print(f"[INFO] Loading model from {config.MODEL_NAME}...")
+    model = RobertaForMaskedLM.from_pretrained(config.MODEL_NAME)
 
-    # 7b) Build a boolean mask “cannot_mask” for every position that must NOT be masked:
-    #      - any special token (CLS, SEP, PAD, etc.)
-    #      - any position < PREFIX_LEN
-    special_ids = set(tokenizer.all_special_ids)
-    is_special = torch.zeros_like(batch_input_ids, dtype=torch.bool)
-    for sid in special_ids:
-        is_special |= batch_input_ids == sid
+    # Setup training arguments
+    training_args = TrainingArguments(
+        output_dir=config.OUTPUT_DIR,
+        overwrite_output_dir=True,
+        num_train_epochs=config.NUM_EPOCHS,
+        per_device_train_batch_size=config.BATCH_SIZE,
+        save_strategy="epoch",
+        save_total_limit=config.SAVE_TOTAL_LIMIT,
+        logging_steps=config.LOGGING_STEPS,
+    )
 
-    # Build a broadcasted row-vector [0, 1, 2, ..., L-1] < PREFIX_LEN
-    device = batch_input_ids.device
-    pos_idxs = torch.arange(L, device=device).unsqueeze(0).expand(B, L)  # shape (B, L)
-    is_prefix = pos_idxs < PREFIX_LEN  # True for positions 0..PREFIX_LEN-1
+    # Initialize trainer
+    print("[INFO] Initializing trainer...")
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset["train"],
+        eval_dataset=dataset["validation"],
+        data_collator=diffusion_collator,
+    )
 
-    # Combine to get mask_candidate = everything that *can* be masked:
-    #   mask_candidate = (attention_mask == 1) AND (not special) AND (not prefix)
-    mask_candidate = (batch_attention == 1) & (~is_special) & (~is_prefix)
-    # shape (B, L) of booleans
+    # Train
+    print("\n" + "=" * 60)
+    print("Starting Training")
+    print("=" * 60 + "\n")
+    trainer.train()
 
-    # 7c) Draw random numbers uniformly in [0,1) for each token
-    rand = torch.rand_like(batch_input_ids, dtype=torch.float)  # shape (B, L)
+    # Save model and tokenizer
+    print(f"\n[INFO] Saving model to {config.OUTPUT_DIR}...")
+    trainer.save_model(config.OUTPUT_DIR)
+    tokenizer.save_pretrained(config.OUTPUT_DIR)
 
-    # Decide which positions to mask:
-    mask_positions = (rand < p) & mask_candidate  # shape (B, L)
+    print("[SUCCESS] Training complete!")
 
-    # 7d) Replace those positions with <mask> token in the input
-    batch_input_ids[mask_positions] = tokenizer.mask_token_id
-
-    # 7e) For labels, only compute loss where mask_positions is True:
-    labels[~mask_positions] = -100  # unmasked positions get -100
-
-    return {
-        "input_ids": batch_input_ids,
-        "attention_mask": batch_attention,
-        "labels": labels,
-    }
+    # Run inference test
+    run_inference_test(model, tokenizer, dataset, diffusion_collator)
 
 
-# 8) Training arguments
-training_args = TrainingArguments(
-    output_dir="roberta-diffusion-single-with-prefix",
-    overwrite_output_dir=True,
-    num_train_epochs=NUM_EPOCHS,
-    per_device_train_batch_size=BATCH_SIZE,
-    save_strategy="epoch",
-    save_total_limit=1,
-    logging_steps=200,
-    # You can also add gradient_accumulation_steps or increase max_steps if desired
-)
-
-# 9) Create a single Trainer with our modified collator
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=tokenized["train"],
-    eval_dataset=tokenized["validation"],
-    data_collator=diffusion_collator,
-    tokenizer=tokenizer,
-)
-
-# 10) Train & save
-trainer.train()
-trainer.save_model("roberta-diffusion-single-with-prefix")
-tokenizer.save_pretrained("roberta-diffusion-single-with-prefix")
-
-print("Finished diffusion‐style finetuning with first 64 tokens never masked\n")
-
-# 11) Quick inference check
-model.eval()
-block = tokenized["validation"][0]
-features = {
-    "input_ids": block["input_ids"],
-    "attention_mask": block["attention_mask"],
-}
-batch = diffusion_collator([features])
-input_ids_masked = batch["input_ids"].to(model.device)
-
-with torch.no_grad():
-    logits = model(input_ids_masked).logits
-    pred_ids = logits.argmax(dim=-1)
-
-masked_str = tokenizer.decode(
-    input_ids_masked[0],
-    skip_special_tokens=False,
-    clean_up_tokenization_spaces=False,
-).replace(tokenizer.mask_token, "�")
-
-pred_str = tokenizer.decode(
-    pred_ids[0],
-    skip_special_tokens=True,
-    clean_up_tokenization_spaces=False,
-)
-
-print("--- Sample inference (random mask‐rate, prefix unmasked) ---")
-print("Input :\n" + masked_str + "\n")
-print("Output:\n" + pred_str)
-print("-" * 60)
+if __name__ == "__main__":
+    main()
