@@ -10,21 +10,7 @@ import time
 import torch
 from transformers import GPT2LMHeadModel, GPT2TokenizerFast
 
-from utils import get_device
-
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
-class Config:
-    """Inference configuration."""
-
-    MODEL_NAME: str = "gpt2"
-    MAX_LENGTH: int = 512
-    TOP_K: int = 50
-    TOP_P: float = 0.95
-    TEMPERATURE: float = 0.8
+from config import Config, get_device
 
 
 # =============================================================================
@@ -71,7 +57,7 @@ def generate(
     output_ids = model.generate(
         input_ids=input_ids,
         attention_mask=attention_mask,
-        max_length=config.MAX_LENGTH,
+        max_length=config.MAX_LEN,
         do_sample=True,
         top_k=config.TOP_K,
         top_p=config.TOP_P,
@@ -113,11 +99,11 @@ def main() -> None:
 
     # Load model and tokenizer
     print("[INFO] Loading GPT-2 tokenizer and model…")
-    tokenizer = GPT2TokenizerFast.from_pretrained(config.MODEL_NAME)
+    tokenizer = GPT2TokenizerFast.from_pretrained(config.GPT_MODEL_NAME)
     # GPT-2 has no pad_token by default, set it to eos_token
     tokenizer.pad_token = tokenizer.eos_token
 
-    model = GPT2LMHeadModel.from_pretrained(config.MODEL_NAME)
+    model = GPT2LMHeadModel.from_pretrained(config.GPT_MODEL_NAME)
     model.to(device)
     model.eval()
     print("[INFO] Model loaded successfully.")

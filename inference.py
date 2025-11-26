@@ -12,21 +12,7 @@ import torch
 from matplotlib.animation import FuncAnimation
 from transformers import RobertaForMaskedLM, RobertaTokenizerFast
 
-from utils import get_device
-
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
-class Config:
-    """Inference configuration."""
-
-    MODEL_DIR: str = "weights/roberta-diffusion-16s40e"
-    MAX_LEN: int = 512
-    PREFIX_LEN: int = 64
-    CONFIDENCE_THRESHOLD: float = 0.95
-    TEMPERATURE: float = 1.0
+from config import Config, get_device
 
 
 # =============================================================================
@@ -273,8 +259,8 @@ def main() -> None:
 
     # Load model and tokenizer
     print("[INFO] Loading RoBERTa tokenizer and model…")
-    tokenizer = RobertaTokenizerFast.from_pretrained(config.MODEL_DIR)
-    model = RobertaForMaskedLM.from_pretrained(config.MODEL_DIR)
+    tokenizer = RobertaTokenizerFast.from_pretrained(config.OUTPUT_DIR)
+    model = RobertaForMaskedLM.from_pretrained(config.OUTPUT_DIR)
     model.to(device)
     model.eval()
 

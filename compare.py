@@ -19,18 +19,7 @@ from transformers import (
 # Import generation functions from existing inference scripts
 import gpt2_inference
 import inference
-from utils import get_device
-
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
-class Config:
-    """Comparison configuration."""
-
-    ROBERTA_DIR: str = "weights/roberta-diffusion-16s40e"
-    ANIMATION_FPS: int = 30
+from config import Config, get_device
 
 
 # =============================================================================
@@ -175,7 +164,7 @@ def main() -> None:
     parser.add_argument("prompt", help="Prompt text for both models")
     parser.add_argument(
         "--roberta-dir",
-        default="weights/roberta-diffusion-16s40e",
+        default="weights",
         help="Path to RoBERTa model directory",
     )
     args = parser.parse_args()
@@ -183,38 +172,35 @@ def main() -> None:
     config = Config()
     device = get_device()
 
-    # Configure both models to use the same settings
-    roberta_config = inference.Config()
-    roberta_config.MODEL_DIR = args.roberta_dir
-
-    gpt2_config = gpt2_inference.Config()
+    # Override model directory if specified
+    model_dir = args.roberta_dir if args.roberta_dir != "weights" else config.OUTPUT_DIR
 
     # Load RoBERTa
     print("[INFO] Loading RoBERTa model…")
-    rtok = RobertaTokenizerFast.from_pretrained(roberta_config.MODEL_DIR)
-    rmodel = RobertaForMaskedLM.from_pretrained(roberta_config.MODEL_DIR)
+    rtok = RobertaTokenizerFast.from_pretrained(model_dir)
+    rmodel = RobertaForMaskedLM.from_pretrained(model_dir)
     rmodel.to(device)
     rmodel.eval()
 
     # Load GPT-2
     print("[INFO] Loading GPT-2 model…")
-    gtok = GPT2TokenizerFast.from_pretrained(gpt2_config.MODEL_NAME)
+    gtok = GPT2TokenizerFast.from_pretrained(config.GPT_MODEL_NAME)
     gtok.pad_token = gtok.eos_token
-    gmodel = GPT2LMHeadModel.from_pretrained(gpt2_config.MODEL_NAME)
+    gmodel = GPT2LMHeadModel.from_pretrained(config.GPT_MODEL_NAME)
     gmodel.to(device)
     gmodel.eval()
 
     # RoBERTa generation (reuse from inference.py)
     print("[INFO] Running RoBERTa diffusion…")
     initial_ids, attention_mask = inference.prepare_prompt(
-        args.prompt, rtok, roberta_config.PREFIX_LEN, roberta_config.MAX_LEN, device
+        args.prompt, rtok, config.PREFIX_LEN, config.MAX_LEN, device
     )
     rd_final, rd_snaps, rd_time = inference.generate(
         rmodel,
         rtok,
         initial_ids,
         attention_mask,
-        roberta_config,
+        config,
         device,
         collect_snapshots=True,
     )
@@ -226,13 +212,13 @@ def main() -> None:
         args.prompt,
         gmodel,
         gtok,
-        gpt2_config,
+        config,
         device,
     )
     print(f"[RESULT] GPT-2: {gt_time:.2f}s")
 
     # Build GPT-2 snapshots for animation
-    gt_snaps = build_gpt2_snapshots(gt_text, gtok, roberta_config.PREFIX_LEN)
+    gt_snaps = build_gpt2_snapshots(gt_text, gtok, config.PREFIX_LEN)
 
     # Display comparison animation
     animate_comparison(

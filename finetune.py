@@ -23,24 +23,7 @@ from transformers import (
     TrainingArguments,
 )
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
-class Config:
-    """Training hyperparameters."""
-
-    N_STEPS: int = 256
-    BATCH_SIZE: int = 16
-    MAX_LEN: int = 256
-    PREFIX_LEN: int = 64
-    MODEL_NAME: str = "roberta-base"
-    OUTPUT_DIR: str = "weights"
-    MAX_STEPS: int = 1000
-    SAVE_STEPS: int = 500
-    LOGGING_STEPS: int = 50
-    SAVE_TOTAL_LIMIT: int = 1
+from config import Config
 
 
 # =============================================================================
@@ -66,7 +49,7 @@ class DiffusionCollator:
         self.config = config
         # Generate linearly spaced mask probabilities from high to low
         self.mask_probs = [
-            (i + 1) / config.N_STEPS for i in range(config.N_STEPS - 1, -1, -1)
+            (i + 1) / config.MAX_LEN for i in range(config.MAX_LEN - 1, -1, -1)
         ]
         self.special_ids = set(tokenizer.all_special_ids)
 
