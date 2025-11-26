@@ -2,6 +2,8 @@
 
 A research project exploring diffusion-based text generation using RoBERTa as an alternative to traditional autoregressive language models.
 
+View the related blog post [here](https://nathan.rs/posts/roberta-diffusion/).
+
 ## Installation
 
 This project uses [uv](https://github.com/astral-sh/uv) for package management.
@@ -13,6 +15,16 @@ uv sync
 
 ## Usage
 
+### Fine-tuning
+
+Train your own RoBERTa diffusion model on openwebtext:
+
+```bash
+uv run python finetune.py
+```
+
+The blog post used `wikitext-2` instead of `openwebtext`, which seems to for some reason lead to better generations. You can mess around and try changing datasets. I originally trained this by renting a H200 for an hour.
+
 ### Basic Text Generation
 
 Generate text using the RoBERTa diffusion model:
@@ -21,13 +33,10 @@ Generate text using the RoBERTa diffusion model:
 uv run python inference.py "Your prompt text here"
 ```
 
-The script will:
-- Use your prompt as the fixed prefix
-- Generate continuation using confidence-based parallel decoding
-- Display step-by-step progress in terminal
-- Create an animated visualization of the generation process
+Depending on what the `PREFIX_LEN` is set to, your prompt will need to be that length to not be out of distribution. It wouldn't be too hard to add variable length prefixes during training though.
 
-**Skip animation:**
+To show the generation step-by-step as an animation, just add this flag:
+
 ```bash
 uv run python inference.py "Your prompt" --animation
 ```
@@ -58,17 +67,9 @@ This creates a synchronized animation showing:
 - GPT-2 autoregressive generation
 - Timing metrics for both approaches
 
-### Fine-tuning
-
-Train your own RoBERTa diffusion model:
-
-```bash
-uv run python finetune.py
-```
-
 **Training Details:**
 - **Dataset**: OpenWebText (large-scale web text corpus)
-- **Lazy Loading**: Data is tokenized on-the-fly during training
+- **Lazy Loading**: Data is tokenized on-the-fly during training (can be changed)
 - **Custom Collator**: Handles tokenization and variable masking per batch
 - **Prefix Preservation**: First `PREFIX_LEN` tokens are never masked
 - **Variable Masking**: Trains on all masking ratios from 0% to 100%
@@ -77,11 +78,9 @@ uv run python finetune.py
 
 ```
 RoBERTaDiffusion/
-├── inference.py         # RoBERTa diffusion inference (confidence-based)
+├── config.py            # configuration for training and inference
+├── finetune.py          # RoBERTa diffusion training script
+├── inference.py         # RoBERTa diffusion inference
 ├── gpt2_inference.py    # GPT-2 baseline inference
 ├── compare.py           # Side-by-side model comparison
-├── finetune.py          # RoBERTa diffusion training script
-├── utils.py             # Shared utilities (device selection, etc.)
-├── pyproject.toml       # Project dependencies
-└── weights/             # Pre-trained model checkpoints
 ```
