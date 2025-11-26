@@ -36,7 +36,9 @@ class Config:
     MAX_LEN: int = 512
     PREFIX_LEN: int = 64
     MODEL_NAME: str = "roberta-base"
-    OUTPUT_DIR: str = "roberta-diffusion-single-with-prefix"
+    OUTPUT_DIR: str = "weights"
+    MAX_STEPS: int = 10000
+    SAVE_STEPS: int = 2000
     LOGGING_STEPS: int = 200
     SAVE_TOTAL_LIMIT: int = 1
 
@@ -188,7 +190,7 @@ def main() -> None:
 
     # Load dataset (no preprocessing - done on-the-fly in collator)
     print("[INFO] Loading OpenWebText dataset...")
-    dataset = load_dataset("openwebtext", trust_remote_code=True)
+    dataset = load_dataset("openwebtext", streaming=True, trust_remote_code=True)
 
     # Create data collator (handles tokenization + masking)
     print("[INFO] Creating diffusion data collator...")
@@ -202,9 +204,10 @@ def main() -> None:
     training_args = TrainingArguments(
         output_dir=config.OUTPUT_DIR,
         overwrite_output_dir=True,
-        num_train_epochs=config.NUM_EPOCHS,
+        max_steps=config.MAX_STEPS,
         per_device_train_batch_size=config.BATCH_SIZE,
-        save_strategy="epoch",
+        save_strategy="steps",
+        save_steps=config.SAVE_STEPS,
         save_total_limit=config.SAVE_TOTAL_LIMIT,
         logging_steps=config.LOGGING_STEPS,
     )
@@ -215,7 +218,7 @@ def main() -> None:
         model=model,
         args=training_args,
         train_dataset=dataset["train"],
-        eval_dataset=dataset["validation"],
+        eval_dataset=dataset["train"],
         data_collator=diffusion_collator,
     )
 
