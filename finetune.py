@@ -12,6 +12,7 @@ Key features:
 """
 
 from typing import Any
+import time
 
 import torch
 from datasets import Dataset, DatasetDict, load_dataset
@@ -30,16 +31,15 @@ from transformers import (
 class Config:
     """Training hyperparameters."""
 
-    N_STEPS: int = 512
-    NUM_EPOCHS: int = 1
+    N_STEPS: int = 256
     BATCH_SIZE: int = 16
-    MAX_LEN: int = 512
+    MAX_LEN: int = 256
     PREFIX_LEN: int = 64
     MODEL_NAME: str = "roberta-base"
     OUTPUT_DIR: str = "weights"
-    MAX_STEPS: int = 10000
-    SAVE_STEPS: int = 2000
-    LOGGING_STEPS: int = 200
+    MAX_STEPS: int = 1000
+    SAVE_STEPS: int = 500
+    LOGGING_STEPS: int = 50
     SAVE_TOTAL_LIMIT: int = 1
 
 
@@ -73,7 +73,14 @@ class DiffusionCollator:
     def __call__(self, features: list[dict]) -> dict[str, torch.Tensor]:
         """Collate a batch of features with tokenization and dynamic masking."""
         # Extract text from features
-        texts = [f["text"] for f in features]
+        # Handle both dict-like and example-like features
+        texts = []
+        for f in features:
+            if isinstance(f, dict):
+                texts.append(f.get("text", f.get("content", "")))
+            else:
+                # IterableDataset items might be Example objects
+                texts.append(f["text"] if "text" in f else str(f))
 
         # Tokenize all texts to exactly MAX_LEN
         encoded = self.tokenizer(
@@ -135,14 +142,13 @@ def run_inference_test(
     dataset: DatasetDict,
     diffusion_collator: DiffusionCollator,
 ) -> None:
-    """Run a quick inference test on a validation sample."""
+    """Run a quick inference test on a sample."""
     print("\n[INFO] Running inference test...")
     model.eval()
 
-    # Get a validation sample (raw text)
-    sample = dataset["validation"][0]
-
     # Apply collator (tokenizes and masks)
+    # For streaming datasets, iterate to get first sample
+    sample = next(iter(dataset["train"]))
     batch = diffusion_collator([sample])
     input_ids_masked = batch["input_ids"].to(model.device)
 
@@ -210,6 +216,7 @@ def main() -> None:
         save_steps=config.SAVE_STEPS,
         save_total_limit=config.SAVE_TOTAL_LIMIT,
         logging_steps=config.LOGGING_STEPS,
+        remove_unused_columns=False,  # Keep dataset columns for custom collator
     )
 
     # Initialize trainer
