@@ -21,7 +21,7 @@ class Config:
     """Inference configuration."""
 
     MODEL_NAME: str = "gpt2"
-    MAX_LENGTH: int = 256
+    MAX_LENGTH: int = 512
     TOP_K: int = 50
     TOP_P: float = 0.95
     TEMPERATURE: float = 0.8

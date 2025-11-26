@@ -23,9 +23,8 @@ class Config:
     """Inference configuration."""
 
     MODEL_DIR: str = "weights/roberta-diffusion-16s40e"
-    MAX_LEN: int = 256
-    PREFIX_LEN: int = 16
-    MAX_STEPS: int = 256
+    MAX_LEN: int = 512
+    PREFIX_LEN: int = 64
     CONFIDENCE_THRESHOLD: float = 0.95
     TEMPERATURE: float = 1.0
 
@@ -145,12 +144,10 @@ def generate(
         )
 
     t0 = time.time()
+    step = 0
 
-    for step in range(config.MAX_STEPS):
-        # Check if all tokens are decoded
-        if not masked_positions.any():
-            print(f"[INFO] All tokens decoded at step {step}")
-            break
+    while masked_positions.any():
+        step += 1
 
         # Predict tokens
         with torch.no_grad():
@@ -189,7 +186,7 @@ def generate(
             )
 
     elapsed = time.time() - t0
-    print(f"[INFO] Generation took {elapsed:.2f} seconds ({step + 1} steps)")
+    print(f"[INFO] Generation took {elapsed:.2f} seconds ({step} steps)")
 
     return x, snapshots, elapsed
 
