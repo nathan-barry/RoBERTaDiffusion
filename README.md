@@ -3,6 +3,8 @@
 A research project exploring diffusion-based text generation using RoBERTa as an alternative to traditional autoregressive language models.
 View the related blog post, [BERT is just a Single Text Diffusion Step](https://nathan.rs/posts/roberta-diffusion/).
 
+![Demo](animation.gif)
+
 Since this blog post, I modified decoding to use confidence-aware parallel decoding instead of iterative refinement. Essentially, instead of going through the masking schedule continually predicting all tokens and applying the next mask, it decodes at each step all tokens above a given confidence (or the most confident if none reach this threshhold). This generally improves model output, but it seems to actually make it worse in undertrained settings.
 
 Training it for two hours on an H200, the model still repeated itself as a byproduct of decoding the most confident tokens, while in the iterative refinement case, the curse of parallel decoding actually led to more varied output.
